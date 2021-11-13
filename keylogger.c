@@ -19,7 +19,7 @@
 #include <linux/if_ether.h>
 #include <linux/netpoll.h>
 
-#define DEBUG 0
+#define DEBUG 1
 #define debug(args...) if(DEBUG) printk(KERN_INFO args)
 
 #define BUF_SIZE 256
