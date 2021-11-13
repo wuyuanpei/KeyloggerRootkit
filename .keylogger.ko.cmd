@@ -1,0 +1,1 @@
+cmd_/home/richardwu/Desktop/KeyloggerRootkit/keylogger.ko := ld -r -m elf_x86_64  --build-id=sha1  -T scripts/module.lds -o /home/richardwu/Desktop/KeyloggerRootkit/keylogger.ko /home/richardwu/Desktop/KeyloggerRootkit/keylogger.o /home/richardwu/Desktop/KeyloggerRootkit/keylogger.mod.o;  true
