@@ -1,2 +1,9 @@
 # KeyloggerRootkit
 This project implements a Linux keylogger rootkit module that sends logs over network and hides its existence
+
+- The keylogger will log all the ASCII characters, <kbd>ENTER</kbd> ``'\n'``, <kbd>BACKSPACE</kbd> ``'\b'``, <kbd>ESC</kbd> ``'\e'``, and <kbd>TAB</kbd> ``'\t'``. <kbd>SHIFT</kbd> with a key will change the corresponding character into upper case or a different symbol.
+- All the keys stored will be put into a local buffer (char array) named ``key_buf``
+- ``key_buf`` has a size preset by the attacker and when ``key_buf`` is full, a udp packet containing the whole buffer will be sent to the attacker.
+- The ip address and udp port are preset by the attacker.
+- The keylogger also implements a timer that periodically checks ``key_buf``. If ``key_buf`` is not empty, a udp packet containing its content will be sent to the attacker. The period of the timer is preset by the attacker.
+
