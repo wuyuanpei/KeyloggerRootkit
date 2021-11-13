@@ -224,6 +224,8 @@ void hideme(void)
 }
 
 
+// should try ftrace
+
 /* init function */
 static int keylogger_init(void)
 {
