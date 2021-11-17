@@ -24,9 +24,6 @@
 #include <linux/hrtimer.h>
 #include <linux/sched.h>
 
-// for hiding
-#include <linux/syscalls.h>
-
 #define DEBUG 0
 #define debug(args...) if(DEBUG) printk(KERN_INFO args)
 
