@@ -9,158 +9,112 @@
 #include <linux/slab.h>
 #include <linux/uaccess.h>
 #include <linux/version.h>
+#include <linux/kprobes.h>
 
 #if defined(CONFIG_X86_64) && (LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0))
 #define PTREGS_SYSCALL_STUBS 1
 #endif
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,7,0)
-#define BRUTEFORCE_KADDR 1
+/* x64 has to be special and require a different naming convention */
+#ifdef PTREGS_SYSCALL_STUBS
+#define SYSCALL_NAME(name) ("__x64_" name)
+#else
+#define SYSCALL_NAME(name) (name)
 #endif
 
-#define HOOK(_name, _hook, _orig) \
-{ \
-    .name = (_name), \
-    .function = (_hook), \
-    .original = (_orig), \
+#define HOOK(_name, _hook, _orig)   \
+{                   \
+    .name = SYSCALL_NAME(_name),        \
+    .function = (_hook),        \
+    .original = (_orig),        \
 }
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,7,0)
+static unsigned long lookup_name(const char *name)
+{
+	struct kprobe kp = {
+		.symbol_name = name
+	};
+	unsigned long retval;
+
+	if (register_kprobe(&kp) < 0) return 0;
+	retval = (unsigned long) kp.addr;
+	unregister_kprobe(&kp);
+	return retval;
+}
+#else
+static unsigned long lookup_name(const char *name)
+{
+	return kallsyms_lookup_name(name);
+}
+#endif
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5,11,0)
+#define FTRACE_OPS_FL_RECURSION FTRACE_OPS_FL_RECURSION_SAFE
+#endif
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5,11,0)
+#define ftrace_regs pt_regs
+
+static __always_inline struct pt_regs *ftrace_get_regs(struct ftrace_regs *fregs)
+{
+	return fregs;
+}
+#endif
 
 /*
- * In kernel version 5.7, kallsyms_lookup_name() was unexported, so we can't use it anymore.
- * The alternative method below is slower (but not really noticably), and works by brute-forcing
- * possible addresses for the function name by starting at the kernel base address and using
- * sprint_symbol() (which is still exported) to check if the symbol name at each address
- * matches the one we want.
+ * There are two ways of preventing vicious recursive loops when hooking:
+ * - detect recusion using function return address (USE_FENTRY_OFFSET = 0)
+ * - avoid recusion by jumping over the ftrace call (USE_FENTRY_OFFSET = 1)
  */
-#ifdef BRUTEFORCE_KADDR
-unsigned long kaddr_lookup_name(const char *fname_raw)
-{
-    int i;
-    unsigned long kaddr;
-    char *fname_lookup, *fname;
-
-    fname_lookup = kzalloc(NAME_MAX, GFP_KERNEL);
-    if (!fname_lookup)
-        return 0;
-
-    fname = kzalloc(strlen(fname_raw)+4, GFP_KERNEL);
-    if (!fname)
-        return 0;
-
-    /*
-     * We have to add "+0x0" to the end of our function name
-     * because that's the format that sprint_symbol() returns
-     * to us. If we don't do this, then our search can stop
-     * prematurely and give us the wrong function address!
-     */
-    strcpy(fname, fname_raw);
-    strcat(fname, "+0x0");
-
-    /*
-     * Get the kernel base address:
-     * sprint_symbol() is less than 0x100000 from the start of the kernel, so
-     * we can just AND-out the last 3 bytes from it's address to the the base
-     * address.
-     * There might be a better symbol-name to use?
-     */
-    kaddr = (unsigned long) &sprint_symbol;
-    kaddr &= 0xffffffffff000000;
-
-    /*
-     * All the syscalls (and all interesting kernel functions I've seen so far)
-     * are within the first 0x100000 bytes of the base address. However, the kernel
-     * functions are all aligned so that the final nibble is 0x0, so we only
-     * have to check every 16th address.
-     */
-    for ( i = 0x0 ; i < 0x100000 ; i++ )
-    {
-        /*
-         * Lookup the name ascribed to the current kernel address
-         */
-        sprint_symbol(fname_lookup, kaddr);
-
-        /*
-         * Compare the looked-up name to the one we want
-         */
-        if ( strncmp(fname_lookup, fname, strlen(fname)) == 0 )
-        {
-            /*
-             * Clean up and return the found address
-             */
-            kfree(fname_lookup);
-            return kaddr;
-        }
-        /*
-         * Jump 16 addresses to next possible address
-         */
-        kaddr += 0x10;
-    }
-    /*
-     * We didn't find the name, so clean up and return 0
-     */
-    kfree(fname_lookup);
-    return 0;
-}
-#endif
-
-/* We need to prevent recursive loops when hooking, otherwise the kernel will
- * panic and hang. The options are to either detect recursion by looking at
- * the function return address, or by jumping over the ftrace call. We use the 
- * first option, by setting USE_FENTRY_OFFSET = 0, but could use the other by
- * setting it to 1. (Oridinarily ftrace provides it's own protections against
- * recursion, but it relies on saving return registers in $rip. We will likely
- * need the use of the $rip register in our hook, so we have to disable this
- * protection and implement our own).
- * */
 #define USE_FENTRY_OFFSET 0
-#if !USE_FENTRY_OFFSET
-#pragma GCC optimize("-fno-optimize-sibling-calls")
-#endif
 
-/* We pack all the information we need (name, hooking function, original function)
- * into this struct. This makes is easier for setting up the hook and just passing
- * the entire struct off to fh_install_hook() later on.
- * */
+/**
+ * struct ftrace_hook - describes a single hook to install
+ *
+ * @name:     name of the function to hook
+ *
+ * @function: pointer to the function to execute instead
+ *
+ * @original: pointer to the location where to save a pointer
+ *            to the original function
+ *
+ * @address:  kernel address of the function entry
+ *
+ * @ops:      ftrace_ops state for this function hook
+ *
+ * The user should fill in only &name, &hook, &orig fields.
+ * Other fields are considered implementation details.
+ */
 struct ftrace_hook {
-    const char *name;
-    void *function;
-    void *original;
+	const char *name;
+	void *function;
+	void *original;
 
-    unsigned long address;
-    struct ftrace_ops ops;
+	unsigned long address;
+	struct ftrace_ops ops;
 };
 
-/* Ftrace needs to know the address of the original function that we
- * are going to hook. As before, we just use kallsyms_lookup_name() 
- * to find the address in kernel memory.
- * */
 static int fh_resolve_hook_address(struct ftrace_hook *hook)
 {
-    /*
-     * Use a different function if we're on kernel version 5.7+
-     */
-#ifdef BRUTEFORCE_KADDR
-    hook->address = kaddr_lookup_name(hook->name);
-#else
-    hook->address = kallsyms_lookup_name(hook->name);
-#endif
+	hook->address = lookup_name(hook->name);
 
-    if (!hook->address)
-    {
-        printk(KERN_DEBUG "rootkit: unresolved symbol: %s\n", hook->name);
-        return -ENOENT;
-    }
+	if (!hook->address) {
+		pr_debug("unresolved symbol: %s\n", hook->name);
+		return -ENOENT;
+	}
 
 #if USE_FENTRY_OFFSET
-    *((unsigned long*) hook->original) = hook->address + MCOUNT_INSN_SIZE;
+	*((unsigned long*) hook->original) = hook->address + MCOUNT_INSN_SIZE;
 #else
-    *((unsigned long*) hook->original) = hook->address;
+	*((unsigned long*) hook->original) = hook->address;
 #endif
 
-    return 0;
+	return 0;
 }
 
-static void notrace fh_ftrace_thunk(unsigned long ip, unsigned long parent_ip, struct ftrace_ops *ops, struct ftrace_regs *fregs)
+static void notrace fh_ftrace_thunk(unsigned long ip, unsigned long parent_ip,
+		struct ftrace_ops *ops, struct ftrace_regs *fregs)
 {
 	struct pt_regs *regs = ftrace_get_regs(fregs);
 	struct ftrace_hook *hook = container_of(ops, struct ftrace_hook, ops);
@@ -173,96 +127,105 @@ static void notrace fh_ftrace_thunk(unsigned long ip, unsigned long parent_ip, s
 #endif
 }
 
-/* Assuming we've already set hook->name, hook->function and hook->original, we 
- * can go ahead and install the hook with ftrace. This is done by setting the 
- * ops field of hook (see the comment below for more details), and then using
- * the built-in ftrace_set_filter_ip() and register_ftrace_function() functions
- * provided by ftrace.h
- * */
+/**
+ * fh_install_hooks() - register and enable a single hook
+ * @hook: a hook to install
+ *
+ * Returns: zero on success, negative error code otherwise.
+ */
 int fh_install_hook(struct ftrace_hook *hook)
 {
-    int err;
-    err = fh_resolve_hook_address(hook);
-    if(err)
-        return err;
+	int err;
 
-    /* For many of function hooks (especially non-trivial ones), the $rip
-     * register gets modified, so we have to alert ftrace to this fact. This
-     * is the reason for the SAVE_REGS and IP_MODIFY flags. However, we also
-     * need to OR the RECURSION_SAFE flag (effectively turning if OFF) because
-     * the built-in anti-recursion guard provided by ftrace is useless if
-     * we're modifying $rip. This is why we have to implement our own checks
-     * (see USE_FENTRY_OFFSET). */
-    hook->ops.func = fh_ftrace_thunk;
-    hook->ops.flags = FTRACE_OPS_FL_SAVE_REGS
-            | FTRACE_OPS_FL_RECURSION
-            | FTRACE_OPS_FL_IPMODIFY;
+	err = fh_resolve_hook_address(hook);
+	if (err)
+		return err;
 
-    err = ftrace_set_filter_ip(&hook->ops, hook->address, 0, 0);
-    if(err)
-    {
-        printk(KERN_DEBUG "rootkit: ftrace_set_filter_ip() failed: %d\n", err);
-        return err;
-    }
+	/*
+	 * We're going to modify %rip register so we'll need IPMODIFY flag
+	 * and SAVE_REGS as its prerequisite. ftrace's anti-recursion guard
+	 * is useless if we change %rip so disable it with RECURSION.
+	 * We'll perform our own checks for trace function reentry.
+	 */
+	hook->ops.func = fh_ftrace_thunk;
+	hook->ops.flags = FTRACE_OPS_FL_SAVE_REGS
+	                | FTRACE_OPS_FL_RECURSION
+	                | FTRACE_OPS_FL_IPMODIFY;
 
-    err = register_ftrace_function(&hook->ops);
-    if(err)
-    {
-        printk(KERN_DEBUG "rootkit: register_ftrace_function() failed: %d\n", err);
-        return err;
-    }
+	err = ftrace_set_filter_ip(&hook->ops, hook->address, 0, 0);
+	if (err) {
+		pr_debug("ftrace_set_filter_ip() failed: %d\n", err);
+		return err;
+	}
 
-    return 0;
+	err = register_ftrace_function(&hook->ops);
+	if (err) {
+		pr_debug("register_ftrace_function() failed: %d\n", err);
+		ftrace_set_filter_ip(&hook->ops, hook->address, 1, 0);
+		return err;
+	}
+
+	return 0;
 }
 
-/* Disabling our function hook is just a simple matter of calling the built-in
- * unregister_ftrace_function() and ftrace_set_filter_ip() functions (note the
- * opposite order to that in fh_install_hook()).
- * */
+/**
+ * fh_remove_hooks() - disable and unregister a single hook
+ * @hook: a hook to remove
+ */
 void fh_remove_hook(struct ftrace_hook *hook)
 {
-    int err;
-    err = unregister_ftrace_function(&hook->ops);
-    if(err)
-    {
-        printk(KERN_DEBUG "rootkit: unregister_ftrace_function() failed: %d\n", err);
-    }
+	int err;
 
-    err = ftrace_set_filter_ip(&hook->ops, hook->address, 1, 0);
-    if(err)
-    {
-        printk(KERN_DEBUG "rootkit: ftrace_set_filter_ip() failed: %d\n", err);
-    }
+	err = unregister_ftrace_function(&hook->ops);
+	if (err) {
+		pr_debug("unregister_ftrace_function() failed: %d\n", err);
+	}
+
+	err = ftrace_set_filter_ip(&hook->ops, hook->address, 1, 0);
+	if (err) {
+		pr_debug("ftrace_set_filter_ip() failed: %d\n", err);
+	}
 }
 
-/* To make it easier to hook multiple functions in one module, this provides
- * a simple loop over an array of ftrace_hook struct
- * */
+/**
+ * fh_install_hooks() - register and enable multiple hooks
+ * @hooks: array of hooks to install
+ * @count: number of hooks to install
+ *
+ * If some hooks fail to install then all hooks will be removed.
+ *
+ * Returns: zero on success, negative error code otherwise.
+ */
 int fh_install_hooks(struct ftrace_hook *hooks, size_t count)
 {
-    int err;
-    size_t i;
+	int err;
+	size_t i;
 
-    for (i = 0 ; i < count ; i++)
-    {
-        err = fh_install_hook(&hooks[i]);
-        if(err)
-            goto error;
-    }
-    return 0;
+	for (i = 0; i < count; i++) {
+		err = fh_install_hook(&hooks[i]);
+		if (err)
+			goto error;
+	}
+
+	return 0;
 
 error:
-    while (i != 0)
-    {
-        fh_remove_hook(&hooks[--i]);
-    }
-    return err;
+	while (i != 0) {
+		fh_remove_hook(&hooks[--i]);
+	}
+
+	return err;
 }
 
+/**
+ * fh_remove_hooks() - disable and unregister multiple hooks
+ * @hooks: array of hooks to remove
+ * @count: number of hooks to remove
+ */
 void fh_remove_hooks(struct ftrace_hook *hooks, size_t count)
 {
-    size_t i;
+	size_t i;
 
-    for (i = 0 ; i < count ; i++)
-        fh_remove_hook(&hooks[i]);
+	for (i = 0; i < count; i++)
+		fh_remove_hook(&hooks[i]);
 }
