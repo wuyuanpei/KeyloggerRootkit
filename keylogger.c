@@ -24,9 +24,7 @@
 #include <linux/hrtimer.h>
 #include <linux/sched.h>
 
-#include <linux/init.h>
-#include <linux/module.h>
-#include <linux/kernel.h>
+// for hiding
 #include <linux/syscalls.h>
 #include <linux/kallsyms.h>
 #include <linux/version.h>
