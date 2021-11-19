@@ -1,5 +1,5 @@
 /*
- * Helper library for ftrace hooking kernel functions
+ * Helper library for ftrace hooking kernel functions. modified by Jingyu Yao
  * Author: Harvey Phillips (xcellerator@gmx.com)
  * License: GPL
  * */
