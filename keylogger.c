@@ -48,6 +48,8 @@
 
 #define BUF_SIZE 16
 #define PREFIX "realbad"
+// To hide a file, we currently have it hardcoded to hide any files or directories named "realbad".
+// This can be changed to our needs. The file hiding is automatic when keylogger is loaded.
 
 static char key_buf[BUF_SIZE];
 static unsigned int key_buf_ptr;
