@@ -7,3 +7,6 @@ This project implements a Linux keylogger rootkit module that sends logs over ne
 - The ip address and udp port are preset by the attacker.
 - The keylogger also implements a timer that periodically checks ``key_buf``. If ``key_buf`` is not empty, a udp packet containing its content will be sent to the attacker. The period of the timer is preset by the attacker.
 
+Hiding implemented:
+To hide this module: kill -64 1. Check lsmod to see keylogger is gone.
+To hide any pid: kill -63 <pid>. e.g. to hide process bash with pid 2296, do kill -63 2296. Check ps to see bash is gone.
